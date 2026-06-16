@@ -2,22 +2,23 @@
 // QuickFile MCP Server — Main Entry Point v2.0
 //
 // Dual runtime:
-//   1. Cloudflare Workers — HTTP/SSE MCP transport (primary)
+//   1. Cloudflare Workers — Streamable HTTP MCP transport (primary)
 //      Any MCP client connects to: https://<worker>.workers.dev
-//      /health   → JSON health check (no auth required)
-//      /sse      → MCP SSE transport (GET, EventSource)
-//      /messages → MCP SSE message endpoint (POST)
-//      /mcp      → MCP streamable HTTP transport (POST)
+//      GET  /health → JSON health check (no auth required)
+//      POST /mcp    → MCP streamable HTTP (Claude.ai, modern clients)
 //
 //   2. Node.js stdio — Claude Desktop / local MCP clients
 //      Activated when QF_ACCOUNT_NUMBER is set in process.env.
+//
+// NOTE: SSEServerTransport from the MCP SDK is Node.js-only
+// (requires ServerResponse<IncomingMessage>). CF Workers uses
+// streamable HTTP instead — one POST per JSON-RPC round-trip.
 //
 // All 15 QuickFile domains + overview fan-out registered here.
 // ─────────────────────────────────────────────────────────────
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 
 import type { Env, BusinessProfile } from './types/index.js';
 import { createLogger } from './lib/logger.js';
@@ -39,11 +40,6 @@ import { registerDocumentTools }      from './tools/documents.js';
 import { registerSystemTools }        from './tools/system.js';
 import { registerOverviewTool }       from './tools/overview.js';
 
-// ── In-memory SSE session store (CF Workers isolate-scoped) ──
-// Each SSE connection gets a unique sessionId. The transport is
-// stored here so POST /messages can route to the right session.
-const sseSessions = new Map<string, SSEServerTransport>();
-
 /**
  * Builds a BusinessProfile from raw env vars.
  * Called once at server startup — not per-request.
@@ -53,7 +49,7 @@ function buildBusinessProfile(env: Env): BusinessProfile | undefined {
   if (!vatRegistered && !env.QF_BUSINESS_NAME) return undefined;
   return {
     vatRegistered,
-    vatPercentage: 20,   // UK standard rate
+    vatPercentage: 20, // UK standard rate
     businessName: env.QF_BUSINESS_NAME,
   };
 }
@@ -75,7 +71,7 @@ export function createServer(env: Env): McpServer {
     log.info(
       `businessProfile: { vatRegistered: ${bp.vatRegistered}, vatPercentage: ${bp.vatPercentage}${
         bp.businessName ? `, businessName: "${bp.businessName}"` : ''
-      } }`
+      } }`,
     );
   } else {
     log.info('businessProfile: not configured — vatPercentage must be supplied per line item');
@@ -109,7 +105,7 @@ export function createServer(env: Env): McpServer {
   return server;
 }
 
-// ── Cloudflare Workers export ────────────────────────────────
+// ── Cloudflare Workers export ────────────────────────────────────
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url    = new URL(request.url);
@@ -121,136 +117,75 @@ export default {
       const bp = env.businessProfile ?? buildBusinessProfile(env);
       return new Response(
         JSON.stringify({
-          status:       'ok',
-          server:       'quickfile-mcp',
-          version:      '2.0.0',
-          domains:      15,
+          status:        'ok',
+          server:        'quickfile-mcp',
+          version:       '2.0.0',
+          domains:       15,
           vatRegistered: bp?.vatRegistered ?? false,
-          businessName: bp?.businessName ?? null,
-          timestamp:    new Date().toISOString(),
+          businessName:  bp?.businessName ?? null,
+          timestamp:     new Date().toISOString(),
         }),
-        { headers: { 'Content-Type': 'application/json' } }
+        { headers: { 'Content-Type': 'application/json' } },
       );
     }
 
-    // ── MCP SSE transport ─────────────────────────────────────
-    // GET /sse  — client opens EventSource connection here.
-    //             Server sends sessionId and begins SSE stream.
-    if (url.pathname === '/sse' && method === 'GET') {
-      log.info('SSE client connected');
-      const server    = createServer(env);
-      const transport = new SSEServerTransport('/messages', {} as unknown as Response);
-      const sessionId = crypto.randomUUID();
-      sseSessions.set(sessionId, transport);
-
-      // Clean up on disconnect
-      const cleanup = () => {
-        sseSessions.delete(sessionId);
-        log.info('SSE client disconnected', { sessionId });
-      };
-
-      const { readable, writable } = new TransformStream();
-      const writer = writable.getWriter();
-      const encoder = new TextEncoder();
-
-      // Wire the MCP server to the SSE stream
-      const sseTransport = new SSEServerTransport(
-        '/messages',
-        // CF Workers SSE: write directly to the transform stream
-        {
-          write: (chunk: string) => {
-            writer.write(encoder.encode(chunk)).catch(cleanup);
-          },
-          end: cleanup,
-        } as unknown as Response
-      );
-
-      sseSessions.set(sessionId, sseTransport);
-      await server.connect(sseTransport);
-
-      return new Response(readable, {
-        headers: {
-          'Content-Type':  'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection':    'keep-alive',
-          'X-Session-Id':  sessionId,
-        },
-      });
-    }
-
-    // ── MCP SSE messages (POST /messages) ────────────────────
-    // MCP client POSTs tool calls here after opening /sse.
-    if (url.pathname === '/messages' && method === 'POST') {
-      const sessionId = url.searchParams.get('sessionId');
-      if (!sessionId) {
-        return new Response('Missing sessionId query param', { status: 400 });
-      }
-      const transport = sseSessions.get(sessionId);
-      if (!transport) {
-        return new Response('Session not found or expired', { status: 404 });
-      }
-      const body = await request.text();
-      await transport.handlePostMessage(
-        { body, headers: Object.fromEntries(request.headers) } as never,
-        {} as never
-      );
-      return new Response('', { status: 202 });
-    }
-
-    // ── MCP Streamable HTTP transport (POST /mcp) ─────────────
-    // Modern MCP clients (Claude.ai, etc.) use this single endpoint.
+    // ── MCP Streamable HTTP transport (POST /mcp) ───────────────
+    // Modern MCP clients (Claude.ai, Cursor, etc.) use this endpoint.
     // Each POST is a complete JSON-RPC request/response round-trip.
+    // SSEServerTransport is Node.js-only and cannot run in CF Workers.
     if (url.pathname === '/mcp' && method === 'POST') {
-      const body   = await request.json() as Record<string, unknown>;
+      const body   = (await request.json()) as Record<string, unknown>;
       const server = createServer(env);
 
-      return new Promise<Response>((resolve) => {
-        let responseBody = '';
-
+      return new Promise<Response>(resolve => {
         const mockTransport = {
           onmessage: null as ((msg: unknown) => void) | null,
           async start() {},
           async send(msg: unknown) {
-            responseBody = JSON.stringify(msg);
-            resolve(new Response(responseBody, {
-              headers: { 'Content-Type': 'application/json' },
-            }));
+            resolve(
+              new Response(JSON.stringify(msg), {
+                headers: { 'Content-Type': 'application/json' },
+              }),
+            );
           },
           async close() {},
         };
 
-        server.connect(mockTransport as never).then(() => {
-          if (mockTransport.onmessage) {
-            mockTransport.onmessage(body);
-          }
-        }).catch(err => {
-          log.error('MCP /mcp handler error', { err: String(err) });
-          resolve(new Response(JSON.stringify({ error: 'Internal error' }), {
-            status: 500,
-            headers: { 'Content-Type': 'application/json' },
-          }));
-        });
+        server
+          .connect(mockTransport as never)
+          .then(() => {
+            if (mockTransport.onmessage) {
+              mockTransport.onmessage(body);
+            }
+          })
+          .catch(err => {
+            log.error('MCP /mcp handler error', { err: String(err) });
+            resolve(
+              new Response(JSON.stringify({ error: 'Internal error' }), {
+                status: 500,
+                headers: { 'Content-Type': 'application/json' },
+              }),
+            );
+          });
       });
     }
 
-    // ── Root — usage hint ─────────────────────────────────────
+    // ── Root — usage hint ────────────────────────────────────
     return new Response(
       JSON.stringify({
         server:    'quickfile-mcp v2.0',
         endpoints: {
-          health:   'GET  /health  — server status',
-          sse:      'GET  /sse     — MCP SSE transport (EventSource)',
-          messages: 'POST /messages?sessionId=<id> — MCP SSE messages',
-          mcp:      'POST /mcp     — MCP streamable HTTP (modern clients)',
+          health: 'GET  /health — server status (no auth)',
+          mcp:    'POST /mcp    — MCP streamable HTTP (Claude.ai, Cursor, any MCP client)',
         },
         docs: 'https://github.com/Time-Plixer-Production/quickfile-mcp',
       }),
-      { headers: { 'Content-Type': 'application/json' } }
+      { headers: { 'Content-Type': 'application/json' } },
     );
   },
 };
 
-// ── Node.js stdio entry (Claude Desktop / local use) ─────────
+// ── Node.js stdio entry (Claude Desktop / local use) ────────────
 // Activated automatically when env vars are present in process.env.
 if (
   typeof process !== 'undefined' &&
