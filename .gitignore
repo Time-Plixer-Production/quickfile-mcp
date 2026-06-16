@@ -1,8 +1,5 @@
-node_modules/
-dist/
-.wrangler/
-.dev.vars
 .env
-*.local
-*.log
-coverage/
+dist/
+node_modules/
+.wrangler/
+*.js.map

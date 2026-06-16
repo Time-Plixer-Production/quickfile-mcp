@@ -1,0 +1,74 @@
+# ─────────────────────────────────────────────────────────────
+# Deploy — Builds and deploys to Cloudflare Workers on push to main
+# Secrets required in GitHub repo Settings → Secrets and variables → Actions:
+#
+#   QuickFile secrets (injected as Worker secrets via wrangler):
+#     QF_ACCOUNT_NUMBER   → Your QuickFile account number
+#     QF_API_KEY          → Your QuickFile API key
+#     QF_APP_ID           → Your QuickFile Application ID
+#
+#   Cloudflare secrets (for wrangler to authenticate and deploy):
+#     CLOUDFLARE_API_TOKEN   → From dash.cloudflare.com/profile/api-tokens
+#                              Use the "Edit Cloudflare Workers" template
+#     CLOUDFLARE_ACCOUNT_ID  → From Cloudflare dashboard sidebar (Account ID)
+# ─────────────────────────────────────────────────────────────
+
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    # Only run deploy after CI passes
+    needs: []
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # ── Push QuickFile secrets into the Cloudflare Worker ────
+      # These are injected as encrypted Worker secrets (not env vars).
+      # They will be available as env.QF_ACCOUNT_NUMBER etc. at runtime.
+      - name: Set QF_ACCOUNT_NUMBER secret on Worker
+        run: echo "$QF_ACCOUNT_NUMBER" | npx wrangler secret put QF_ACCOUNT_NUMBER
+        env:
+          QF_ACCOUNT_NUMBER:       ${{ secrets.QF_ACCOUNT_NUMBER }}
+          CLOUDFLARE_API_TOKEN:    ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID:   ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Set QF_API_KEY secret on Worker
+        run: echo "$QF_API_KEY" | npx wrangler secret put QF_API_KEY
+        env:
+          QF_API_KEY:              ${{ secrets.QF_API_KEY }}
+          CLOUDFLARE_API_TOKEN:    ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID:   ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Set QF_APP_ID secret on Worker
+        run: echo "$QF_APP_ID" | npx wrangler secret put QF_APP_ID
+        env:
+          QF_APP_ID:               ${{ secrets.QF_APP_ID }}
+          CLOUDFLARE_API_TOKEN:    ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID:   ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # ── Deploy Worker ─────────────────────────────────────────
+      - name: Deploy via Wrangler
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN:    ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID:   ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

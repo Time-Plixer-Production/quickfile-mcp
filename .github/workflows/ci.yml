@@ -1,3 +1,11 @@
+# ─────────────────────────────────────────────────────────────
+# CI — Typecheck, Test, Build
+# Secrets required in GitHub repo Settings → Secrets and variables → Actions:
+#   QF_ACCOUNT_NUMBER   → Your QuickFile account number
+#   QF_API_KEY          → Your QuickFile API key
+#   QF_APP_ID           → Your QuickFile Application ID
+# ─────────────────────────────────────────────────────────────
+
 name: CI
 
 on:
@@ -7,14 +15,24 @@ on:
     branches: [main]
 
 jobs:
-  test:
-    name: Typecheck + Test
+  ci:
+    name: Typecheck + Test + Build
     runs-on: ubuntu-latest
 
-    steps:
-      - uses: actions/checkout@v4
+    env:
+      # ── QuickFile secrets — fetched from GitHub Secrets ──────
+      QF_ACCOUNT_NUMBER: ${{ secrets.QF_ACCOUNT_NUMBER }}
+      QF_API_KEY:        ${{ secrets.QF_API_KEY }}
+      QF_APP_ID:         ${{ secrets.QF_APP_ID }}
+      # ── Optional tuning ──────────────────────────────────────
+      LOG_LEVEL:         info
 
-      - uses: actions/setup-node@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
@@ -28,5 +46,5 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Check for build errors
+      - name: Build
         run: npm run build
