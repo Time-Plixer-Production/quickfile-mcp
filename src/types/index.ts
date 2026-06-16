@@ -6,8 +6,8 @@ export interface Env {
   QF_ACCOUNT_NUMBER: string;
   QF_API_KEY: string;
   QF_APP_ID: string;
-  RATE_LIMIT_OVERRIDE?: string;
-  LOG_LEVEL?: string;
+  RATE_LIMIT_OVERRIDE?: string | undefined;
+  LOG_LEVEL?: string | undefined;
 }
 
 // QuickFile API envelope types
