@@ -15,22 +15,30 @@ enabled = true
 # Safe to commit — not sensitive.
 [vars]
 LOG_LEVEL = "info"
+
+# ── Business profile (optional, non-secret) ──────────────────
+# Uncomment and set to enable automatic VAT handling on invoices,
+# estimates and purchases. When QF_VAT_REGISTERED = "true" the
+# server automatically applies 20% UK VAT to line items in WRITE
+# tools without the AI needing to ask per request.
+#
+# QF_VAT_REGISTERED = "true"
+# QF_BUSINESS_NAME  = "Ellyfe Ltd"
+
+# ── Rate limit override (optional) ───────────────────────────
+# Uncomment to override the default 900 calls/day safety budget.
+# Useful if QuickFile has raised your API quota above 1000/day.
+# Example: 1800 = 90% of a 2000/day quota.
+#
 # RATE_LIMIT_OVERRIDE = "900"
-# Uncomment and set to override the default 900 calls/day budget.
-# The RateLimiter reads this from env.RATE_LIMIT_OVERRIDE at runtime.
-# Useful if QuickFile has increased your API limit above 1000/day.
-# Example: RATE_LIMIT_OVERRIDE = "1800"  (for a 2000/day quota at 90%)
 
 # ── Secrets — NEVER put values here ──────────────────────────
-# Set automatically by the GitHub Actions deploy workflow via:
-#   echo "$VALUE" | npx wrangler secret put SECRET_NAME
+# Set via GitHub Actions deploy workflow or manually:
+#   npx wrangler secret put QF_ACCOUNT_NUMBER
+#   npx wrangler secret put QF_API_KEY
+#   npx wrangler secret put QF_APP_ID
 #
 # Available at runtime as:
 #   env.QF_ACCOUNT_NUMBER
 #   env.QF_API_KEY
 #   env.QF_APP_ID
-#
-# To set manually (one-off):
-#   npx wrangler secret put QF_ACCOUNT_NUMBER
-#   npx wrangler secret put QF_API_KEY
-#   npx wrangler secret put QF_APP_ID

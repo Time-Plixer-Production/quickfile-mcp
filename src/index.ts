@@ -9,7 +9,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
-import type { Env } from './types/index.js';
+import type { Env, BusinessProfile } from './types/index.js';
 import { createLogger } from './lib/logger.js';
 
 import { registerInvoiceTools }       from './tools/invoices.js';
@@ -29,8 +29,40 @@ import { registerDocumentTools }      from './tools/documents.js';
 import { registerSystemTools }        from './tools/system.js';
 import { registerOverviewTool }       from './tools/overview.js';
 
+/**
+ * Builds a BusinessProfile from raw env vars.
+ * Called once at server startup — not per-request.
+ */
+function buildBusinessProfile(env: Env): BusinessProfile | undefined {
+  const vatRegistered = env.QF_VAT_REGISTERED?.toLowerCase() === 'true';
+  if (!vatRegistered && !env.QF_BUSINESS_NAME) return undefined;
+  return {
+    vatRegistered,
+    vatPercentage: 20,   // UK standard rate
+    businessName: env.QF_BUSINESS_NAME,
+  };
+}
+
 export function createServer(env: Env): McpServer {
   const log = createLogger('server', env.LOG_LEVEL);
+
+  // Attach businessProfile to env so all tools can read it
+  const enrichedEnv: Env = {
+    ...env,
+    businessProfile: env.businessProfile ?? buildBusinessProfile(env),
+  };
+
+  const bp = enrichedEnv.businessProfile;
+  if (bp) {
+    log.info(
+      `businessProfile: { vatRegistered: ${bp.vatRegistered}, vatPercentage: ${bp.vatPercentage}${
+        bp.businessName ? `, businessName: "${bp.businessName}"` : ''
+      } }`
+    );
+  } else {
+    log.info('businessProfile: not configured — vatPercentage must be supplied per line item');
+  }
+
   log.info('Initialising QuickFile MCP server v2.0 — registering all 15 domains');
 
   const server = new McpServer({
@@ -39,22 +71,22 @@ export function createServer(env: Env): McpServer {
   });
 
   // ── Domain tools ────────────────────────────────────────────
-  registerOverviewTool(server, env);        // cross-domain fan-out
-  registerSystemTools(server, env);         // system / account info
-  registerInvoiceTools(server, env);        // invoices
-  registerEstimateTools(server, env);       // estimates
-  registerContactTools(server, env);        // clients
-  registerSupplierTools(server, env);       // suppliers
-  registerBankTools(server, env);           // bank accounts + transactions
-  registerPurchaseTools(server, env);       // purchase invoices
-  registerPurchaseOrderTools(server, env);  // purchase orders
-  registerPaymentTools(server, env);        // payments
-  registerReportTools(server, env);         // P&L, BS, aged, VAT
-  registerLedgerTools(server, env);         // nominal ledger
-  registerJournalTools(server, env);        // journals
-  registerItemTools(server, env);           // inventory items
-  registerProjectTools(server, env);        // project tags
-  registerDocumentTools(server, env);       // document/receipt hub
+  registerOverviewTool(server, enrichedEnv);        // cross-domain fan-out
+  registerSystemTools(server, enrichedEnv);         // system / account info
+  registerInvoiceTools(server, enrichedEnv);        // invoices
+  registerEstimateTools(server, enrichedEnv);       // estimates
+  registerContactTools(server, enrichedEnv);        // clients
+  registerSupplierTools(server, enrichedEnv);       // suppliers
+  registerBankTools(server, enrichedEnv);           // bank accounts + transactions
+  registerPurchaseTools(server, enrichedEnv);       // purchase invoices
+  registerPurchaseOrderTools(server, enrichedEnv);  // purchase orders
+  registerPaymentTools(server, enrichedEnv);        // payments
+  registerReportTools(server, enrichedEnv);         // P&L, BS, aged, VAT
+  registerLedgerTools(server, enrichedEnv);         // nominal ledger
+  registerJournalTools(server, enrichedEnv);        // journals
+  registerItemTools(server, enrichedEnv);           // inventory items
+  registerProjectTools(server, enrichedEnv);        // project tags
+  registerDocumentTools(server, enrichedEnv);       // document/receipt hub
 
   log.info('All tools registered — server ready');
   return server;
@@ -66,12 +98,15 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/health') {
+      const bp = env.businessProfile ?? buildBusinessProfile(env);
       return new Response(
         JSON.stringify({
           status: 'ok',
           server: 'quickfile-mcp',
           version: '2.0.0',
           domains: 15,
+          vatRegistered: bp?.vatRegistered ?? false,
+          businessName: bp?.businessName ?? null,
           timestamp: new Date().toISOString(),
         }),
         { headers: { 'Content-Type': 'application/json' } }
@@ -98,6 +133,8 @@ if (
     QF_APP_ID:           process.env['QF_APP_ID']!,
     RATE_LIMIT_OVERRIDE: process.env['RATE_LIMIT_OVERRIDE'] ?? undefined,
     LOG_LEVEL:           process.env['LOG_LEVEL'] ?? undefined,
+    QF_VAT_REGISTERED:   process.env['QF_VAT_REGISTERED'] ?? undefined,
+    QF_BUSINESS_NAME:    process.env['QF_BUSINESS_NAME'] ?? undefined,
   };
   const server    = createServer(env);
   const transport = new StdioServerTransport();

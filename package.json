@@ -11,7 +11,13 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint src --ext .ts"
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "secretlint": "secretlint \"**/*\"",
+    "precommit": "npm run typecheck && npm run secretlint",
+    "prepare": "husky"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
@@ -19,13 +25,23 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250620.0",
+    "@secretlint/secretlint-rule-preset-recommend": "^9.3.3",
     "@types/node": "^20.19.0",
-    "typescript": "^5.5.4",
-    "vitest": "^2.1.0",
-    "wrangler": "^3.101.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
-    "eslint": "^9.0.0"
+    "eslint": "^9.0.0",
+    "eslint-config-prettier": "^9.1.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.2.0",
+    "prettier": "^3.3.0",
+    "secretlint": "^9.3.3",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.0",
+    "wrangler": "^3.101.0"
+  },
+  "lint-staged": {
+    "*.ts": ["eslint --fix", "prettier --write"],
+    "*.{json,md,yml,yaml,toml}": ["prettier --write"]
   },
   "engines": {
     "node": ">=20"
