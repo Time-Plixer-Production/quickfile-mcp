@@ -67,7 +67,7 @@ export interface MCPResult {
   liveData: boolean;   // always true — confirms real API fetch, not hallucination
   fetchedAt: string;   // ISO timestamp of when data was fetched
   data: unknown;
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> | undefined;
 }
 
 // Reasoning guard verdict
