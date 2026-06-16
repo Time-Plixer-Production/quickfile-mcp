@@ -1,0 +1,17 @@
+name = "quickfile-mcp"
+main = "src/index.ts"
+compatibility_date = "2025-06-18"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+
+[[unsafe.bindings]]
+name = "MCP_OBJECT"
+type = "mcp_server"
+
+# ─── Secrets (set via: wrangler secret put <NAME>) ───────────────────────────
+# QF_ACCOUNT_NUMBER   — Your QuickFile account number
+# QF_API_KEY          — Your QuickFile API key (Account Settings)
+# QF_APP_ID           — Application ID from QuickFile App registration
+# RATE_LIMIT_OVERRIDE — Optional: override daily call budget (default 900)
