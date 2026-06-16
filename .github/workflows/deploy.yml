@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
-# Deploy — Build and deploy to Cloudflare Workers on push to main.
-# Only runs AFTER the CI build-and-test job passes.
+# Deploy — Build and deploy to Cloudflare Workers.
+# Triggered only AFTER the CI workflow passes on main.
 #
 # Secrets required (GitHub repo → Settings → Secrets → Actions):
 #
@@ -18,19 +18,20 @@
 name: Deploy to Cloudflare Workers
 
 on:
-  push:
+  # Only deploy when the CI workflow completes successfully on main.
+  # This replaces the broken `needs: []` cross-job gate that couldn't
+  # reference jobs in a different workflow file.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
 
 jobs:
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
-    # CRITICAL: never deploy if CI failed
-    needs: []
-    # Trigger only from the same workflow run is not possible cross-workflow;
-    # deploy is intentionally standalone but gated by a status check.
-    # To gate on the CI workflow, enable branch protection requiring
-    # "CI / Typecheck + Build" to pass before merging to main.
+    # Gate: only run if the CI workflow succeeded
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     steps:
       - name: Checkout
@@ -44,10 +45,10 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build
-        run: npm run build
+      - name: Typecheck
+        run: npm run typecheck
 
-      # ── Push QuickFile secrets into the Cloudflare Worker ────────────────
+      # ── Push QuickFile secrets into the Cloudflare Worker ──────────────
       # Secrets are encrypted at rest in Cloudflare and injected at runtime
       # as env.QF_ACCOUNT_NUMBER, env.QF_API_KEY, env.QF_APP_ID.
       - name: Set QF_ACCOUNT_NUMBER secret
@@ -71,7 +72,7 @@ jobs:
           CLOUDFLARE_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      # ── Deploy ────────────────────────────────────────────────────────────
+      # ── Deploy ──────────────────────────────────────────────────────────
       - name: Deploy via Wrangler
         run: npx wrangler deploy
         env:

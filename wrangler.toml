@@ -15,6 +15,11 @@ enabled = true
 # Safe to commit — not sensitive.
 [vars]
 LOG_LEVEL = "info"
+# RATE_LIMIT_OVERRIDE = "900"
+# Uncomment and set to override the default 900 calls/day budget.
+# The RateLimiter reads this from env.RATE_LIMIT_OVERRIDE at runtime.
+# Useful if QuickFile has increased your API limit above 1000/day.
+# Example: RATE_LIMIT_OVERRIDE = "1800"  (for a 2000/day quota at 90%)
 
 # ── Secrets — NEVER put values here ──────────────────────────
 # Set automatically by the GitHub Actions deploy workflow via:
