@@ -91,6 +91,6 @@ export function toMCPResult(
     liveData: anySuccess,
     fetchedAt: new Date().toISOString(),
     data: dataMap,
-    metadata: opts?.metadata ?? undefined,
+    metadata: opts?.metadata,
   };
 }
