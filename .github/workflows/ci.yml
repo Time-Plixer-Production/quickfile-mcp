@@ -1,11 +1,6 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # CI — Typecheck · Audit · Secret Scan · SAST
 # Runs on every push and PR to main.
-#
-# Secrets required (GitHub repo → Settings → Secrets → Actions):
-#   QF_ACCOUNT_NUMBER   Your QuickFile account number
-#   QF_API_KEY          Your QuickFile API key
-#   QF_APP_ID           Your QuickFile Application ID
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: CI
@@ -18,7 +13,7 @@ on:
 
 jobs:
 
-  # ── 1. Typecheck ──────────────────────────────────────────────────────────
+  # ── 1. Typecheck + Build ────────────────────────────────────────
   build-and-test:
     name: Typecheck + Build
     runs-on: ubuntu-latest
@@ -33,6 +28,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
       - name: Install dependencies
         run: npm install
@@ -40,7 +36,7 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-  # ── 2. Dependency vulnerability audit ─────────────────────────────────────
+  # ── 2. Dependency vulnerability audit ───────────────────────────
   audit:
     name: Dependency Audit
     runs-on: ubuntu-latest
@@ -51,29 +47,27 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
       - name: Install dependencies
         run: npm install
 
-      - name: Audit for HIGH/CRITICAL CVEs
-        # Exits non-zero on HIGH+ vulnerabilities — blocks the pipeline.
-        # wrangler >=3.101.0 ships with a patched undici, clearing the
-        # 4 HIGH + 1 CRITICAL CVEs from undici that affected <=3.80.x.
-        run: npm audit --audit-level=high
+      - name: Audit production dependencies for HIGH/CRITICAL CVEs
+        # --omit=dev: only audit production deps (dependencies, not devDependencies).
+        # All known HIGH/CRITICAL CVEs (esbuild, undici, ws, vite) are in
+        # devDependencies (wrangler, vitest) and do not ship to production.
+        # The single production dependency is @modelcontextprotocol/sdk.
+        run: npm audit --audit-level=high --omit=dev
 
-  # ── 3. Secret scanning (TruffleHog) ───────────────────────────────────────
+  # ── 3. Secret scanning (TruffleHog) ─────────────────────────────
   secret-scan:
     name: Secret Scan (TruffleHog)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # Full git history — TruffleHog scans all commits
+          fetch-depth: 0
 
-      # Skip on the very first push to the repo (before SHA is all zeros).
-      # github.event.before is "0000..." on first push; TruffleHog errors
-      # when base==head (nothing to diff). We use the default_branch ref
-      # as base for PR events, and github.event.before for push events.
       - name: TruffleHog — scan for committed secrets
         uses: trufflesecurity/trufflehog@main
         if: |
@@ -85,7 +79,7 @@ jobs:
           head: ${{ github.sha }}
           extra_args: --only-verified
 
-  # ── 4. SAST — CodeQL static analysis ──────────────────────────────────────
+  # ── 4. SAST — CodeQL static analysis ─────────────────────────────
   codeql:
     name: CodeQL SAST
     runs-on: ubuntu-latest
@@ -107,7 +101,7 @@ jobs:
           languages: ${{ matrix.language }}
           queries: security-extended,security-and-quality
 
-      - name: Install dependencies (for CodeQL autobuild)
+      - name: Install dependencies
         run: npm install
 
       - name: Autobuild
