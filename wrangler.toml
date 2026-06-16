@@ -1,44 +1,43 @@
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Cloudflare Workers configuration — quickfile-mcp
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 name = "quickfile-mcp"
 main = "src/index.ts"
-compatibility_date = "2025-06-18"
+compatibility_date = "2026-06-16"
+
+# nodejs_compat enables Node.js APIs in the Workers runtime:
+# crypto, process shim, Buffer, EventEmitter — all needed by the MCP SDK.
 compatibility_flags = ["nodejs_compat"]
 
-# ── Observability ─────────────────────────────────────────────
+# ── Observability ─────────────────────────────────────────────────────────────
 [observability]
 enabled = true
 
-# ── Non-secret runtime variables ─────────────────────────────
-# Safe to commit — not sensitive.
+# ── Non-secret runtime variables ──────────────────────────────────────────────
+# Safe to commit. Not sensitive.
 [vars]
 LOG_LEVEL = "info"
 
-# ── Business profile (optional, non-secret) ──────────────────
-# Uncomment and set to enable automatic VAT handling on invoices,
-# estimates and purchases. When QF_VAT_REGISTERED = "true" the
-# server automatically applies 20% UK VAT to line items in WRITE
-# tools without the AI needing to ask per request.
+# ── Optional: VAT-registered business profile ─────────────────────────────────
+# Uncomment to enable automatic 20% UK VAT on all invoice/purchase line items.
+# When set, AI tools never need to ask about VAT per line item.
 #
 # QF_VAT_REGISTERED = "true"
 # QF_BUSINESS_NAME  = "Ellyfe Ltd"
 
-# ── Rate limit override (optional) ───────────────────────────
-# Uncomment to override the default 900 calls/day safety budget.
-# Useful if QuickFile has raised your API quota above 1000/day.
-# Example: 1800 = 90% of a 2000/day quota.
+# ── Optional: Rate limit override ─────────────────────────────────────────────
+# Default: 900/day (90% of QuickFile's 1000/day quota).
+# Uncomment only if QuickFile has raised your account quota.
 #
 # RATE_LIMIT_OVERRIDE = "900"
 
-# ── Secrets — NEVER put values here ──────────────────────────
-# Set via GitHub Actions deploy workflow or manually:
+# ── Secrets — NEVER put values here ───────────────────────────────────────────
+# Set via Wrangler CLI (encrypted at rest in Cloudflare):
+#
 #   npx wrangler secret put QF_ACCOUNT_NUMBER
 #   npx wrangler secret put QF_API_KEY
 #   npx wrangler secret put QF_APP_ID
 #
-# Available at runtime as:
-#   env.QF_ACCOUNT_NUMBER
-#   env.QF_API_KEY
-#   env.QF_APP_ID
+# For local dev: create .dev.vars (gitignored) — see .gitignore.
+# DO NOT commit .dev.vars — it contains live API credentials.

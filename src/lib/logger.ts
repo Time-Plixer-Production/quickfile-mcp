@@ -1,9 +1,14 @@
 // ─────────────────────────────────────────────────────────────
-// Structured logger — HARDENED
-// - Respects LOG_LEVEL: debug | info | warn | error
-// - Outputs JSON to stderr so it does NOT pollute MCP stdio
-// - ALL log output passes through the secret scrubber
-// - msg and every meta value is scrubbed before writing
+// Structured logger — CF Workers + Node.js compatible
+//
+// IMPORTANT: Uses console.error exclusively.
+//   - process.stderr.write does NOT exist in CF Workers runtime.
+//   - console.error works in both CF Workers and Node.js.
+//   - console.log / stdout must NEVER be used — in stdio mode
+//     stdout IS the MCP wire; any non-JSON line corrupts the stream.
+//
+// Respects LOG_LEVEL env var: debug | info | warn | error
+// All output passes through the secret scrubber before writing.
 // ─────────────────────────────────────────────────────────────
 
 import { scrub } from './scrubber.js';
@@ -43,15 +48,13 @@ export function createLogger(namespace: string, levelOverride?: string): Logger 
       ts:  new Date().toISOString(),
       lvl: level,
       ns:  namespace,
-      msg: scrub(msg),                                  // ← scrubbed
-      ...(meta ? scrubMeta(meta) : {}),                 // ← scrubbed
+      msg: scrub(msg),
+      ...(meta ? scrubMeta(meta) : {}),
     });
-    // Always write to stderr — never stdout (MCP transport wire)
-    if (typeof process !== 'undefined') {
-      process.stderr.write(line + '\n');
-    } else {
-      console.error(line);
-    }
+    // console.error → stderr in Node.js, Cloudflare Workers logs in dashboard.
+    // NEVER use process.stderr.write — not available in CF Workers.
+    // NEVER use console.log — that is the MCP stdio wire in stdio mode.
+    console.error(line);
   }
 
   return {

@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Re-add node types for test files only.
+    // Runtime code (src/) must never depend on node types — see tsconfig.json.
+    "types": ["@cloudflare/workers-types", "node"],
+    "noEmit": true
+  },
+  "include": ["src/**/*", "tests/**/*"]
+}

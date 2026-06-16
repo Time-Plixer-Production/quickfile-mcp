@@ -1,9 +1,15 @@
 // ─────────────────────────────────────────────────────────────
-// QuickFile API HTTP client — HARDENED
-// - Scrubs secrets from all error messages before propagating
-// - Validates HTTP + API-level responses
-// - 15s AbortController timeout on every request
-// - Never logs request payloads (which contain auth headers)
+// QuickFile API HTTP client — CF Workers + Node.js compatible
+//
+// - Uses global fetch (CF Workers native + Node 18+)
+// - AbortController timeout typed as number:
+//     CF Workers setTimeout returns number (not NodeJS.Timeout).
+//     Node types are excluded from tsconfig.json to prevent
+//     NodeJS.Timeout vs number conflict. Explicit annotation below.
+// - All errors have secrets scrubbed before propagating
+// - Validates both HTTP status and QF API StatusCode
+// - 15s timeout per request
+// - Never logs request payloads (contain auth credentials)
 // ─────────────────────────────────────────────────────────────
 
 import type { Env, QFRequest, QFResponse, QFDomain } from '../types/index.js';
@@ -15,6 +21,7 @@ const TIMEOUT_MS = 15_000;
 
 /**
  * Makes a single authenticated QuickFile API call.
+ * Compatible with Cloudflare Workers (global fetch + crypto.randomUUID).
  * All thrown errors have secrets scrubbed before being propagated.
  */
 export async function callQF<TBody = Record<string, unknown>, TResp = unknown>(
@@ -33,7 +40,13 @@ export async function callQF<TBody = Record<string, unknown>, TResp = unknown>(
   const url = `${QF_BASE}/${domain}/${method}`;
 
   const controller = new AbortController();
-  const timeoutId  = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  // Explicit number type annotation.
+  // CF Workers setTimeout returns number — do NOT use NodeJS.Timeout.
+  // Node types are intentionally excluded from tsconfig.json.
+  const timeoutId: number = setTimeout(
+    () => controller.abort(),
+    TIMEOUT_MS
+  ) as unknown as number;
 
   let httpResponse: Response;
   try {
@@ -45,15 +58,15 @@ export async function callQF<TBody = Record<string, unknown>, TResp = unknown>(
     });
   } catch (err) {
     clearTimeout(timeoutId);
-    // Scrub any secret values that could appear in fetch error messages
-    throw new Error(`[quickfile-mcp] Network error on ${domain}/${method}: ${safeError(err, env)}`);
+    throw new Error(
+      `[quickfile-mcp] Network error on ${domain}/${method}: ${safeError(err, env)}`
+    );
   } finally {
     clearTimeout(timeoutId);
   }
 
   if (!httpResponse.ok) {
     const rawText = await httpResponse.text().catch(() => '(no body)');
-    // Scrub response body — QuickFile errors can echo back request fields
     throw new Error(
       `[quickfile-mcp] HTTP ${httpResponse.status} on ${domain}/${method}: ${safeError(rawText, env)}`
     );
@@ -61,7 +74,6 @@ export async function callQF<TBody = Record<string, unknown>, TResp = unknown>(
 
   const json = await httpResponse.json() as QFResponse<TResp>;
 
-  // QuickFile returns StatusCode in header; non-zero = API-level error
   if (json.Header.StatusCode !== 0) {
     throw new Error(
       `[quickfile-mcp] QF API error [${json.Header.StatusCode}] on ${domain}/${method}: ` +

@@ -1,5 +1,11 @@
 .env
+.env.*
+# Wrangler local dev credentials — NEVER commit this file
+# Contains QF_ACCOUNT_NUMBER, QF_API_KEY, QF_APP_ID in plain text
+.dev.vars
 dist/
 node_modules/
 .wrangler/
+coverage/
 *.js.map
+*.tsbuildinfo
