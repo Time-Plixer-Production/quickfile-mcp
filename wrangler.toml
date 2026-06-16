@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────
-# Cloudflare Workers configuration for quickfile-mcp
+# Cloudflare Workers configuration — quickfile-mcp
 # ─────────────────────────────────────────────────────────────
 
 name = "quickfile-mcp"
@@ -7,29 +7,25 @@ main = "src/index.ts"
 compatibility_date = "2025-06-18"
 compatibility_flags = ["nodejs_compat"]
 
+# ── Observability ─────────────────────────────────────────────
 [observability]
 enabled = true
 
-[[unsafe.bindings]]
-name = "MCP_OBJECT"
-type = "mcp_server"
-
 # ── Non-secret runtime variables ─────────────────────────────
-# These are safe to commit — they are not sensitive.
+# Safe to commit — not sensitive.
 [vars]
 LOG_LEVEL = "info"
 
 # ── Secrets — NEVER put values here ──────────────────────────
-# Secrets are set automatically by the GitHub Actions deploy workflow
-# (see .github/workflows/deploy.yml) using `wrangler secret put`.
-# They are encrypted and injected into the Worker at runtime as:
+# Set automatically by the GitHub Actions deploy workflow via:
+#   echo "$VALUE" | npx wrangler secret put SECRET_NAME
+#
+# Available at runtime as:
 #   env.QF_ACCOUNT_NUMBER
 #   env.QF_API_KEY
 #   env.QF_APP_ID
 #
-# To set manually (one-time local setup):
+# To set manually (one-off):
 #   npx wrangler secret put QF_ACCOUNT_NUMBER
 #   npx wrangler secret put QF_API_KEY
 #   npx wrangler secret put QF_APP_ID
-#
-# The deploy workflow handles this automatically on every push to main.
