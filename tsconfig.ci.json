@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // CI typecheck includes Node types so process.env in the stdio
+    // entry block resolves correctly. This config is ONLY used by
+    // `npm run typecheck` in CI — never by wrangler build/deploy.
+    // The base tsconfig.json stays node-free to keep CF Workers
+    // types clean (no NodeJS.Timeout vs number conflict).
+    "types": ["@cloudflare/workers-types", "node"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "tests"]
+}
