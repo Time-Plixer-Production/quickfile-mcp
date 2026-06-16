@@ -96,8 +96,8 @@ if (
     QF_ACCOUNT_NUMBER:   process.env['QF_ACCOUNT_NUMBER']!,
     QF_API_KEY:          process.env['QF_API_KEY']!,
     QF_APP_ID:           process.env['QF_APP_ID']!,
-    RATE_LIMIT_OVERRIDE: process.env['RATE_LIMIT_OVERRIDE'],
-    LOG_LEVEL:           process.env['LOG_LEVEL'],
+    RATE_LIMIT_OVERRIDE: process.env['RATE_LIMIT_OVERRIDE'] ?? undefined,
+    LOG_LEVEL:           process.env['LOG_LEVEL'] ?? undefined,
   };
   const server    = createServer(env);
   const transport = new StdioServerTransport();
