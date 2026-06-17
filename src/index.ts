@@ -7,18 +7,15 @@
 //   • Cursor / Continue→ GET+POST /sse (SSE transport alias)
 //   • Claude Desktop   → stdio (Node.js)
 //   • MCP Inspector    → GET /health
-//   • Any HTTP client  → OPTIONS preflight (CORS)
+//   • Any HTTP client  → OPTIONS preflight (CORS open)
 //
-// Transport:
-//   Cloudflare Workers uses StreamableHTTPServerTransport from the
-//   official MCP SDK — NOT the broken mock-transport pattern.
-//   SSEServerTransport is Node.js-only; Workers uses HTTP streaming.
-//
+// Transport: WebStandardStreamableHTTPServerTransport (SDK 1.12.x)
+// Stateless mode: new server + transport per request (no session IDs).
 // All 15 QuickFile domains + overview fan-out registered here.
 // ─────────────────────────────────────────────────────────────
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 import type { Env, BusinessProfile } from './types/index.js';
@@ -49,33 +46,32 @@ const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Max-Age':       '86400',
 };
 
-function withCors(response: Response): Response {
-  const headers = new Headers(response.headers);
+function addCors(headers: Headers): void {
   for (const [k, v] of Object.entries(CORS_HEADERS)) headers.set(k, v);
-  return new Response(response.body, {
-    status:     response.status,
-    statusText: response.statusText,
-    headers,
-  });
+}
+
+function corsResponse(body: string | null, init: ResponseInit): Response {
+  const res = new Response(body, init);
+  addCors(res.headers);
+  return res;
 }
 
 /**
  * Builds a BusinessProfile from raw env vars.
- * Called once at server startup — not per-request.
  */
 function buildBusinessProfile(env: Env): BusinessProfile | undefined {
   const vatRegistered = env.QF_VAT_REGISTERED?.toLowerCase() === 'true';
   if (!vatRegistered && !env.QF_BUSINESS_NAME) return undefined;
   return {
     vatRegistered,
-    vatPercentage: 20, // UK standard rate
+    vatPercentage: 20,
     businessName:  env.QF_BUSINESS_NAME,
   };
 }
 
 /**
  * Creates and fully registers the MCP server with all 15 domains.
- * Returns the ready-to-connect McpServer instance.
+ * Must be called fresh per request (stateless mode).
  */
 export function createServer(env: Env): McpServer {
   const log = createLogger('server', env.LOG_LEVEL);
@@ -125,27 +121,39 @@ export function createServer(env: Env): McpServer {
 }
 
 /**
- * Handles a single MCP request using the official StreamableHTTPServerTransport.
- * Works for both POST /mcp and POST /sse (alias).
+ * Handles a single MCP POST request using WebStandardStreamableHTTPServerTransport.
+ * Creates fresh server + transport per request (stateless, no session leak).
  */
-async function handleMcpRequest(request: Request, env: Env, log: ReturnType<typeof createLogger>): Promise<Response> {
+async function handleMcpPost(
+  request: Request,
+  env: Env,
+  log: ReturnType<typeof createLogger>,
+): Promise<Response> {
   try {
-    const server    = createServer(env);
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    // New transport + server per request — required for stateless CF Workers mode
+    const transport = new WebStandardStreamableHTTPServerTransport({
+      corsOptions: {
+        allowedOrigins: ['*'],
+      },
+    });
 
+    const server = createServer(env);
     await server.connect(transport);
 
     const response = await transport.handleRequest(request);
-    await server.close();
 
-    return withCors(response);
+    // Ensure CORS headers are present (transport may not add them for all responses)
+    addCors(response.headers);
+    return response;
   } catch (err) {
     log.error('MCP handler error', { err: String(err) });
-    return withCors(
-      new Response(JSON.stringify({ error: 'Internal server error', detail: String(err) }), {
-        status:  500,
-        headers: { 'Content-Type': 'application/json' },
+    return corsResponse(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        error:   { code: -32603, message: 'Internal server error', data: String(err) },
+        id:      null,
       }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
     );
   }
 }
@@ -167,36 +175,33 @@ export default {
     // ── Health check (unauthenticated) ───────────────────────
     if (url.pathname === '/health') {
       const bp = env.businessProfile ?? buildBusinessProfile(env);
-      return withCors(
-        new Response(
-          JSON.stringify({
-            status:        'ok',
-            server:        'quickfile-mcp',
-            version:       '2.1.0',
-            transport:     ['streamable-http', 'sse'],
-            domains:       15,
-            vatRegistered: bp?.vatRegistered ?? false,
-            businessName:  bp?.businessName  ?? null,
-            timestamp:     new Date().toISOString(),
-          }),
-          { headers: { 'Content-Type': 'application/json' } },
-        ),
+      return corsResponse(
+        JSON.stringify({
+          status:        'ok',
+          server:        'quickfile-mcp',
+          version:       '2.1.0',
+          transport:     ['streamable-http', 'sse-alias'],
+          domains:       15,
+          vatRegistered: bp?.vatRegistered ?? false,
+          businessName:  bp?.businessName  ?? null,
+          timestamp:     new Date().toISOString(),
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
     }
 
     // ── MCP Streamable HTTP — POST /mcp ─────────────────────
-    // Primary endpoint: Perplexity, Claude.ai, Cursor (HTTP mode), any modern client.
+    // Primary endpoint: Perplexity, Claude.ai, Cursor, any modern MCP client.
     if (url.pathname === '/mcp' && method === 'POST') {
-      return handleMcpRequest(request, env, log);
+      return handleMcpPost(request, env, log);
     }
 
-    // ── SSE transport alias — GET /sse and POST /sse ─────────
+    // ── SSE transport alias — /sse ───────────────────────────
     // Legacy/SSE clients (Cursor SSE mode, Continue.dev, older integrations).
-    // GET /sse  → SSE discovery / keepalive (200 text/event-stream)
-    // POST /sse → identical to POST /mcp via same handler
+    // GET /sse  → SSE discovery ping (200, text/event-stream)
+    // POST /sse → same MCP handler
     if (url.pathname === '/sse') {
       if (method === 'GET') {
-        // SSE discovery ping — clients probe this before connecting
         return new Response(
           'data: {"type":"ping","server":"quickfile-mcp","version":"2.1.0"}\n\n',
           {
@@ -211,11 +216,11 @@ export default {
         );
       }
       if (method === 'POST') {
-        return handleMcpRequest(request, env, log);
+        return handleMcpPost(request, env, log);
       }
     }
 
-    // ── robots.txt — suppress crawler noise ─────────────────
+    // ── robots.txt ─────────────────────────────────────────
     if (url.pathname === '/robots.txt') {
       return new Response('User-agent: *\nDisallow: /', {
         headers: { 'Content-Type': 'text/plain' },
@@ -223,19 +228,17 @@ export default {
     }
 
     // ── Root — usage hint ────────────────────────────────────
-    return withCors(
-      new Response(
-        JSON.stringify({
-          server:    'quickfile-mcp v2.1',
-          endpoints: {
-            health: 'GET  /health — server status (no auth)',
-            mcp:    'POST /mcp    — MCP streamable HTTP (Perplexity, Claude.ai, Cursor, any MCP client)',
-            sse:    'GET|POST /sse — SSE transport alias (Cursor SSE mode, Continue.dev, legacy clients)',
-          },
-          docs: 'https://github.com/Time-Plixer-Production/quickfile-mcp',
-        }),
-        { headers: { 'Content-Type': 'application/json' } },
-      ),
+    return corsResponse(
+      JSON.stringify({
+        server:    'quickfile-mcp v2.1',
+        endpoints: {
+          health: 'GET  /health — server status (no auth)',
+          mcp:    'POST /mcp    — MCP streamable HTTP (Perplexity, Claude.ai, Cursor, any MCP client)',
+          sse:    'GET|POST /sse — SSE transport alias (Cursor SSE mode, Continue.dev)',
+        },
+        docs: 'https://github.com/Time-Plixer-Production/quickfile-mcp',
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
     );
   },
 };
