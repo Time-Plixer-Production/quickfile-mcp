@@ -1,23 +1,24 @@
 // ─────────────────────────────────────────────────────────────
-// QuickFile MCP Server — Main Entry Point v2.0
+// QuickFile MCP Server — Main Entry Point v2.1
 //
-// Dual runtime:
-//   1. Cloudflare Workers — Streamable HTTP MCP transport (primary)
-//      Any MCP client connects to: https://<worker>.workers.dev
-//      GET  /health → JSON health check (no auth required)
-//      POST /mcp    → MCP streamable HTTP (Claude.ai, modern clients)
+// Universal MCP server — works with ALL MCP clients:
+//   • Perplexity AI    → POST /mcp  (Streamable HTTP)
+//   • Claude.ai        → POST /mcp  (Streamable HTTP)
+//   • Cursor / Continue→ GET+POST /sse (SSE transport alias)
+//   • Claude Desktop   → stdio (Node.js)
+//   • MCP Inspector    → GET /health
+//   • Any HTTP client  → OPTIONS preflight (CORS)
 //
-//   2. Node.js stdio — Claude Desktop / local MCP clients
-//      Activated when QF_ACCOUNT_NUMBER is set in process.env.
-//
-// NOTE: SSEServerTransport from the MCP SDK is Node.js-only
-// (requires ServerResponse<IncomingMessage>). CF Workers uses
-// streamable HTTP instead — one POST per JSON-RPC round-trip.
+// Transport:
+//   Cloudflare Workers uses StreamableHTTPServerTransport from the
+//   official MCP SDK — NOT the broken mock-transport pattern.
+//   SSEServerTransport is Node.js-only; Workers uses HTTP streaming.
 //
 // All 15 QuickFile domains + overview fan-out registered here.
 // ─────────────────────────────────────────────────────────────
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 import type { Env, BusinessProfile } from './types/index.js';
@@ -40,6 +41,24 @@ import { registerDocumentTools }      from './tools/documents.js';
 import { registerSystemTools }        from './tools/system.js';
 import { registerOverviewTool }       from './tools/overview.js';
 
+// ── CORS headers — allow all MCP clients ──────────────────────
+const CORS_HEADERS: Record<string, string> = {
+  'Access-Control-Allow-Origin':  '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, Mcp-Session-Id, Accept',
+  'Access-Control-Max-Age':       '86400',
+};
+
+function withCors(response: Response): Response {
+  const headers = new Headers(response.headers);
+  for (const [k, v] of Object.entries(CORS_HEADERS)) headers.set(k, v);
+  return new Response(response.body, {
+    status:     response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 /**
  * Builds a BusinessProfile from raw env vars.
  * Called once at server startup — not per-request.
@@ -50,7 +69,7 @@ function buildBusinessProfile(env: Env): BusinessProfile | undefined {
   return {
     vatRegistered,
     vatPercentage: 20, // UK standard rate
-    businessName: env.QF_BUSINESS_NAME,
+    businessName:  env.QF_BUSINESS_NAME,
   };
 }
 
@@ -77,11 +96,11 @@ export function createServer(env: Env): McpServer {
     log.info('businessProfile: not configured — vatPercentage must be supplied per line item');
   }
 
-  log.info('Initialising QuickFile MCP server v2.0 — registering all 15 domains');
+  log.info('Initialising QuickFile MCP server v2.1 — registering all 15 domains');
 
   const server = new McpServer({
-    name: 'quickfile-mcp',
-    version: '2.0.0',
+    name:    'quickfile-mcp',
+    version: '2.1.0',
   });
 
   registerOverviewTool(server, enrichedEnv);
@@ -105,6 +124,32 @@ export function createServer(env: Env): McpServer {
   return server;
 }
 
+/**
+ * Handles a single MCP request using the official StreamableHTTPServerTransport.
+ * Works for both POST /mcp and POST /sse (alias).
+ */
+async function handleMcpRequest(request: Request, env: Env, log: ReturnType<typeof createLogger>): Promise<Response> {
+  try {
+    const server    = createServer(env);
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+
+    await server.connect(transport);
+
+    const response = await transport.handleRequest(request);
+    await server.close();
+
+    return withCors(response);
+  } catch (err) {
+    log.error('MCP handler error', { err: String(err) });
+    return withCors(
+      new Response(JSON.stringify({ error: 'Internal server error', detail: String(err) }), {
+        status:  500,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+  }
+}
+
 // ── Cloudflare Workers export ────────────────────────────────────
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -112,75 +157,85 @@ export default {
     const method = request.method.toUpperCase();
     const log    = createLogger('worker', env.LOG_LEVEL);
 
+    log.info(`${method} ${request.url}`);
+
+    // ── CORS preflight — all routes ──────────────────────────
+    if (method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: CORS_HEADERS });
+    }
+
     // ── Health check (unauthenticated) ───────────────────────
     if (url.pathname === '/health') {
       const bp = env.businessProfile ?? buildBusinessProfile(env);
-      return new Response(
-        JSON.stringify({
-          status:        'ok',
-          server:        'quickfile-mcp',
-          version:       '2.0.0',
-          domains:       15,
-          vatRegistered: bp?.vatRegistered ?? false,
-          businessName:  bp?.businessName ?? null,
-          timestamp:     new Date().toISOString(),
-        }),
-        { headers: { 'Content-Type': 'application/json' } },
+      return withCors(
+        new Response(
+          JSON.stringify({
+            status:        'ok',
+            server:        'quickfile-mcp',
+            version:       '2.1.0',
+            transport:     ['streamable-http', 'sse'],
+            domains:       15,
+            vatRegistered: bp?.vatRegistered ?? false,
+            businessName:  bp?.businessName  ?? null,
+            timestamp:     new Date().toISOString(),
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
       );
     }
 
-    // ── MCP Streamable HTTP transport (POST /mcp) ───────────────
-    // Modern MCP clients (Claude.ai, Cursor, etc.) use this endpoint.
-    // Each POST is a complete JSON-RPC request/response round-trip.
-    // SSEServerTransport is Node.js-only and cannot run in CF Workers.
+    // ── MCP Streamable HTTP — POST /mcp ─────────────────────
+    // Primary endpoint: Perplexity, Claude.ai, Cursor (HTTP mode), any modern client.
     if (url.pathname === '/mcp' && method === 'POST') {
-      const body   = (await request.json()) as Record<string, unknown>;
-      const server = createServer(env);
+      return handleMcpRequest(request, env, log);
+    }
 
-      return new Promise<Response>(resolve => {
-        const mockTransport = {
-          onmessage: null as ((msg: unknown) => void) | null,
-          async start() {},
-          async send(msg: unknown) {
-            resolve(
-              new Response(JSON.stringify(msg), {
-                headers: { 'Content-Type': 'application/json' },
-              }),
-            );
+    // ── SSE transport alias — GET /sse and POST /sse ─────────
+    // Legacy/SSE clients (Cursor SSE mode, Continue.dev, older integrations).
+    // GET /sse  → SSE discovery / keepalive (200 text/event-stream)
+    // POST /sse → identical to POST /mcp via same handler
+    if (url.pathname === '/sse') {
+      if (method === 'GET') {
+        // SSE discovery ping — clients probe this before connecting
+        return new Response(
+          'data: {"type":"ping","server":"quickfile-mcp","version":"2.1.0"}\n\n',
+          {
+            status:  200,
+            headers: {
+              ...CORS_HEADERS,
+              'Content-Type':  'text/event-stream',
+              'Cache-Control': 'no-cache',
+              'Connection':    'keep-alive',
+            },
           },
-          async close() {},
-        };
+        );
+      }
+      if (method === 'POST') {
+        return handleMcpRequest(request, env, log);
+      }
+    }
 
-        server
-          .connect(mockTransport as never)
-          .then(() => {
-            if (mockTransport.onmessage) {
-              mockTransport.onmessage(body);
-            }
-          })
-          .catch(err => {
-            log.error('MCP /mcp handler error', { err: String(err) });
-            resolve(
-              new Response(JSON.stringify({ error: 'Internal error' }), {
-                status: 500,
-                headers: { 'Content-Type': 'application/json' },
-              }),
-            );
-          });
+    // ── robots.txt — suppress crawler noise ─────────────────
+    if (url.pathname === '/robots.txt') {
+      return new Response('User-agent: *\nDisallow: /', {
+        headers: { 'Content-Type': 'text/plain' },
       });
     }
 
     // ── Root — usage hint ────────────────────────────────────
-    return new Response(
-      JSON.stringify({
-        server:    'quickfile-mcp v2.0',
-        endpoints: {
-          health: 'GET  /health — server status (no auth)',
-          mcp:    'POST /mcp    — MCP streamable HTTP (Claude.ai, Cursor, any MCP client)',
-        },
-        docs: 'https://github.com/Time-Plixer-Production/quickfile-mcp',
-      }),
-      { headers: { 'Content-Type': 'application/json' } },
+    return withCors(
+      new Response(
+        JSON.stringify({
+          server:    'quickfile-mcp v2.1',
+          endpoints: {
+            health: 'GET  /health — server status (no auth)',
+            mcp:    'POST /mcp    — MCP streamable HTTP (Perplexity, Claude.ai, Cursor, any MCP client)',
+            sse:    'GET|POST /sse — SSE transport alias (Cursor SSE mode, Continue.dev, legacy clients)',
+          },
+          docs: 'https://github.com/Time-Plixer-Production/quickfile-mcp',
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
     );
   },
 };
@@ -198,9 +253,9 @@ if (
     QF_API_KEY:          process.env['QF_API_KEY']!,
     QF_APP_ID:           process.env['QF_APP_ID']!,
     RATE_LIMIT_OVERRIDE: process.env['RATE_LIMIT_OVERRIDE'] ?? undefined,
-    LOG_LEVEL:           process.env['LOG_LEVEL'] ?? undefined,
-    QF_VAT_REGISTERED:   process.env['QF_VAT_REGISTERED'] ?? undefined,
-    QF_BUSINESS_NAME:    process.env['QF_BUSINESS_NAME'] ?? undefined,
+    LOG_LEVEL:           process.env['LOG_LEVEL']           ?? undefined,
+    QF_VAT_REGISTERED:   process.env['QF_VAT_REGISTERED']   ?? undefined,
+    QF_BUSINESS_NAME:    process.env['QF_BUSINESS_NAME']    ?? undefined,
   };
   const server    = createServer(env);
   const transport = new StdioServerTransport();
